@@ -82,6 +82,15 @@ class VertexAI extends BaseLLM {
 
     // Remove the `model` property and add `anthropic_version`
     const { model, ...finalOptions } = convertedArgs;
+
+    // Add tool support - convert tools to Anthropic's format
+    if (options.tools) {
+      finalOptions.tools = options.tools.map(tool => ({
+        name: tool.function.name,
+        description: tool.function?.description,
+        input_schema: tool.function?.parameters
+      }));
+    }
     return {
       ...finalOptions,
       anthropic_version: "vertex-2023-10-16",
@@ -123,25 +132,88 @@ class VertexAI extends BaseLLM {
               },
             ]
           : systemMessage,
+        // Add tools if they exist in options
+        ...(options.tools ? { 
+          tools: options.tools.map(tool => ({
+            name: tool.function.name,
+            description: tool.function.description,
+            input_schema: tool.function.parameters
+          }))
+        } : {})
       }),
     });
 
     if (options.stream === false) {
       const data = await response.json();
-      yield { role: "assistant", content: data.content[0].text };
+
+      // Check if the response contains a tool call
+      if (data.content && data.content.length > 0) {
+        const contentItem = data.content[0];
+
+        if (contentItem.type === "tool_use") {
+          // Handle tool calls in non-streaming mode
+          yield {
+            role: "assistant",
+            content: "",
+            toolCalls: [{
+              id: contentItem.id || `call_${Date.now()}`,
+              type: "function",
+              function: {
+                name: contentItem.name,
+                arguments: JSON.stringify(contentItem.input)
+              }
+            }]
+          };
+        } else {
+          // Regular text response
+          yield { role: "assistant", content: contentItem.text || "" };
+        }
+      }
       return;
     }
 
+    // For streaming responses
+    let currentToolCall = null;
+
     for await (const value of streamSse(response)) {
-      if (value.type === "message_start") {
-        console.log(value);
-      }
-      if (value.delta?.text) {
+      if (value.type === "content_block_start") {
+        if (value.content_block?.type === "tool_use") {
+          // Initialize a new tool call
+          currentToolCall = {
+            id: value.content_block.id || `call_${Date.now()}`,
+            name: value.content_block.name,
+            input: {}
+          };
+        }
+      } else if (value.type === "content_block_delta" && currentToolCall) {
+        // Update the tool call with new input data
+        if (value.delta?.input) {
+          currentToolCall.input = {
+            ...currentToolCall.input,
+            ...value.delta.input
+          };
+        }
+      } else if (value.type === "content_block_stop" && currentToolCall) {
+        // Finalize and yield the complete tool call
+        yield {
+          role: "assistant",
+          content: "",
+          toolCalls: [{
+            id: currentToolCall.id,
+            type: "function",
+            function: {
+              name: currentToolCall.name,
+              arguments: JSON.stringify(currentToolCall.input)
+            }
+          }]
+        };
+        currentToolCall = null;
+      } else if (value.delta?.text) {
+        // Regular text response
         yield { role: "assistant", content: value.delta.text };
       }
     }
   }
-
   //Gemini
 
   private async *streamChatGemini(

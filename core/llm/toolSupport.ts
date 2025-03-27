@@ -58,8 +58,15 @@ export const PROVIDER_TOOL_SUPPORT: Record<
     return model.toLowerCase().includes("gemini");
   },
   vertexai: (model) => {
-    // All gemini models except flash 2.0 lite support function calling
-    return model.toLowerCase().includes("gemini") && !model.toLowerCase().includes("lite");;
+    return [
+        "claude-3-5",
+        "claude-3.5",
+        "claude-3-7",
+        "claude-3.7",
+        "gemini",
+      ].some((part) => model.toLowerCase().startsWith(part)) || 
+      // All gemini models except flash 2.0 lite support function calling
+      (model.toLowerCase().includes("gemini") && !model.toLowerCase().includes("lite"));
   },
   bedrock: (model) => {
     // For Bedrock, only support Claude Sonnet models with versions 3.5/3-5 and 3.7/3-7
